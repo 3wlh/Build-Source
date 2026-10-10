@@ -1,0 +1,129 @@
+name: Repository TraeWorkAssistant Compile
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "仓库分支"
+        required: false
+        default: 'docker_main'
+         
+      upx:
+        description: "是否用 UPX 压缩二进制"
+        required: false
+        type: boolean
+        default: true
+        
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            target: aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: smart-open/TraeWorkAssistant
+          ref: ${{ github.event.inputs.ref || 'docker_main' }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cargo-zigbuild
+        run: pip install cargo-zigbuild
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-${{ matrix.target }}
+
+      - name: Build static binary
+        env:
+          RUSTFLAGS: '-C target-feature=+crt-static'
+        run: cargo zigbuild --release -p aiwork-server --target ${{ matrix.target }}
+
+      - name: Install UPX
+        if: inputs.upx
+        uses: crazy-max/ghaction-upx@v4
+        with:
+          install-only: true
+      
+      - name: Compress binary with UPX
+        if: inputs.upx
+        working-directory: target/${{ matrix.target }}/release/
+        run: |
+          echo "压缩前: $(ls -lh aiwork-server | awk '{print $5}')"
+          upx -9 aiwork-server
+          echo "压缩后: $(ls -lh aiwork-server | awk '{print $5}')"
+      
+      - name: Package bundle
+        run: |
+          mkdir -p pkg
+          cp target/${{ matrix.target }}/release/aiwork-server pkg/
+          chmod +x pkg/aiwork-server
+          cp -r dist pkg/web-dist
+          cat > pkg/start.sh <<'START_SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$(dirname "$0")"
+          [ -x ./aiwork-server ] || { echo "missing aiwork-server"; exit 1; }
+          [ -d ./web-dist ] || { echo "missing web-dist"; exit 1; }
+          DATA_DIR="${DATA_DIR:-$PWD/data}"
+          mkdir -p "$DATA_DIR"
+          exec env \
+            AIWORK_WEB_DIST="$PWD/web-dist" \
+            AIWORK_DATA_DIR="$DATA_DIR" \
+            ./aiwork-server
+          START_SH
+          chmod +x pkg/start.sh
+          tar czf aiwork-assistant-linux-${{ matrix.arch }}.tar.gz -C pkg .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiwork-linux-${{ matrix.arch }}
+          path: aiwork-assistant-linux-${{ matrix.arch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      
+      - name: Upload to Release
+        if: (steps.check.outputs.status == 'success')
+        uses: softprops/action-gh-release@master
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tag_name: GitHub-Actions_AiWorkAssistant
+          name: Build：AiWorkAssistant
+          body: |
+            ## 软件信息：
+            - 编译时间：`${{ env.Time }}`
+            - SDK版本: `${{ inputs.version }}`
+          files: aiwork-assistant-linux-*.tar.gz
