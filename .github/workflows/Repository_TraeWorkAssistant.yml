@@ -94,6 +94,8 @@ jobs:
           exec env \
             AIWORK_WEB_DIST="$PWD/web-dist" \
             AIWORK_DATA_DIR="$DATA_DIR" \
+            AIWORK_LISTEN_ADDR="0.0.0.0:7864" \
+            AIWORK_ADMIN_TOKEN="123456" \
             ./aiwork-server
           START_SH
           chmod +x pkg/start.sh
@@ -114,6 +116,13 @@ jobs:
         with:
           merge-multiple: true
       
+      - name: Delete GitHub Release
+        uses: dev-drprasad/delete-tag-and-release@v1.1
+        with:
+          tag_name: GitHub-Actions_AiWorkAssistant
+          delete_release: true
+          github_token: ${{ github.token }}
+
       - name: Upload to Release
         uses: softprops/action-gh-release@master
         env:
@@ -124,5 +133,4 @@ jobs:
           body: |
             ## 软件信息：
             - 编译时间：`${{ env.Time }}`
-            - SDK版本: `${{ inputs.version }}`
           files: aiwork-assistant-linux-*.tar.gz
