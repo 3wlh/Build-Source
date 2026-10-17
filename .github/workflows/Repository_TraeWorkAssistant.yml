@@ -113,7 +113,7 @@ jobs:
     steps:
       - name: Initialization Settings
         run: |
-          sudo timedatectl set-timezone "${TZ}"
+          sudo timedatectl set-timezone "Asia/Shanghai"
           echo "Time=$(date "+%Y.%m.%d_%H%M%S")" >> $GITHUB_ENV
       
       - name: Download artifacts
