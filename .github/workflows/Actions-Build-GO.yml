@@ -91,7 +91,7 @@ jobs:
           done               
           # 设置输出变量
           if [ -d "${{ env.Build_PATH }}" ] && [ "$(ls -A ${{ env.Build_PATH }})" ]; then
-            if {{ inputs.upx }}
+            if ${{ inputs.upx }}
               upx -9 ${{ env.Build_PATH }}/*
             fi
             echo "✅ 编译成功"
