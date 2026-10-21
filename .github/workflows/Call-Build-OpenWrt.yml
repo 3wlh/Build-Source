@@ -84,12 +84,21 @@ jobs:
           files=$(find . -type f -name "*.c")
           Argv="-Os -s"
           echo "✅源码文件: ${files}"
-          if [ -n "$files" ]; then
-            echo "${files}"
+          if [ -f "Makefile" ]; then
+            echo "✅检测到 Makefile，使用 make 编译"
+            make
+            # 如果 make 产物需要复制到指定位置（按实际情况调整）
+            if [ -d "Build" ]; then
+              cp -f "Build/*_${{ env.arch }}" "${{ env.Build_PATH }}/${{ env.PACKAGE }}-${{ env.arch }}"
+            fi
+          elif [ -n "$files" ]; then
+            echo "✅源码文件: ${files}"
+            echo "✅使用 gcc 编译 C 源码"
             gcc ${files} -o ${{ env.Build_PATH }}/${{ env.PACKAGE }}-${{ env.arch }} ${Argv}
           else
             files=$(find . -type f -name "*.cpp")
-            echo ${files}
+            echo "✅源码文件: ${files}"
+            echo "✅使用 g++ 编译 C++ 源码"
             g++ ${files} -o ${{ env.Build_PATH }}/${{ env.PACKAGE }}-${{ env.arch }} ${Argv}
           fi
           echo "status=success" >> $GITHUB_OUTPUT
