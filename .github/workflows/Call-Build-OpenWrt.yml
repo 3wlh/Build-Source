@@ -83,7 +83,6 @@ jobs:
           cd "OpenWrt/${{ env.PACKAGE }}"
           files=$(find . -type f -name "*.c")
           Argv="-Os -s"
-          echo "✅源码文件: ${files}"
           if [ -f "Makefile" ]; then
             echo "✅检测到 Makefile，使用 make 编译"
             make
