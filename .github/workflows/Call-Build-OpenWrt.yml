@@ -88,6 +88,7 @@ jobs:
             make
             # 如果 make 产物需要复制到指定位置（按实际情况调整）
             if [ -d "Build" ]; then
+              ls "Build"
               cp -f "Build/*_${{ env.arch }}" "${{ env.Build_PATH }}/${{ env.PACKAGE }}-${{ env.arch }}"
             fi
           elif [ -n "$files" ]; then
