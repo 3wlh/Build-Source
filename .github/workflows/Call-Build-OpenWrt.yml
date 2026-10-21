@@ -89,7 +89,7 @@ jobs:
             # 如果 make 产物需要复制到指定位置（按实际情况调整）
             if [ -d "Build" ]; then
               ls "Build"
-              cp -f "Build/*_$(gcc -dumpmachine)" "${{ env.Build_PATH }}/${{ env.PACKAGE }}-${{ env.arch }}"
+              cp -f Build/*_$(gcc -dumpmachine) "${{ env.Build_PATH }}/${{ env.PACKAGE }}-${{ env.arch }}"
             fi
           elif [ -n "$files" ]; then
             echo "✅源码文件: ${files}"
