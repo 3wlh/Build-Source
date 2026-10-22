@@ -14,7 +14,6 @@ on:
           - NapCat/NapCat_Service
           - Photopea
           - MDDNS
-          - NavPage
       
       upx:
         description: 是否upx压缩

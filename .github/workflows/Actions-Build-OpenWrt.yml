@@ -27,7 +27,6 @@ on:
           - wake-on-lan
           - mddns-script
           - bemfa-server
-          - navpage
           - api
           - wxpusher
           - sub
