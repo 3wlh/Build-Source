@@ -1,0 +1,104 @@
+name: Extract binaries (all architectures)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '镜像 tag（如 docker_main / 1.6.0 / sha-ddf65e7，留空则自动取最新）'
+        required: false
+        default: ''
+
+env:
+  IMAGE_NAME: smart-open/traeworkassistant   # 不带 ghcr.io/ 前缀，不带 tag
+  BINARY_PATH: /app/traeworkassistant       # 按镜像内实际路径修改
+
+jobs:
+  # Job 1：解析 tag + 枚举该 tag 支持的平台
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+      platforms: ${{ steps.list.outputs.platforms }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            # 自动模式：匿名 token 拉 GHCR 的 tag 列表（公共镜像可用）
+            TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:${IMAGE_NAME}:pull&service=ghcr.io" \
+                    | jq -r .token)
+            TAGS=$(curl -s -H "Authorization: Bearer $TOKEN" \
+                    "https://ghcr.io/v2/${IMAGE_NAME}/tags/list" | jq -r '.tags[]')
+            echo "远端所有 tag："; echo "$TAGS"
+
+            # tags/list 无时间戳，按语义化版本号挑最大的 vX.Y.Z
+            TAG=$(echo "$TAGS" | grep -E '^v?[0-9]+(\.[0-9]+)*$' \
+                  | sort -V | tail -1)
+            [ -z "$TAG" ] && TAG="docker_main"   # 兜底
+          fi
+          echo "使用 tag: $TAG"
+          echo "image=ghcr.io/${IMAGE_NAME}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: List platforms for this tag
+        id: list
+        run: |
+          PLATFORMS=$(docker buildx imagetools inspect "${{ steps.tag.outputs.image }}" \
+            --format '{{range .Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}}{{"\n"}}{{end}}' \
+            | grep '^linux/' || true)
+          # 注意：unknown/unknown 是 SBOM/attestation 清单，要过滤掉
+          if [ -z "$PLATFORMS" ]; then
+            echo "::warning::未发现 linux 平台，回退 linux/amd64"
+            PLATFORMS="linux/amd64"
+          fi
+          MATRIX=$(echo "$PLATFORMS" | jq -R -s -c 'split("\n") | map(select(length>0))')
+          echo "platforms=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  # Job 2：按架构并行提取二进制
+  extract:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(needs.resolve.outputs.platforms) }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and extract
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+        run: |
+          docker pull --platform "${{ matrix.platform }}" "$IMAGE"
+          docker create --platform "${{ matrix.platform }}" --name extract-tmp "$IMAGE"
+          mkdir -p ./out
+          docker cp "extract-tmp:${BINARY_PATH}" ./out/
+          docker rm -f extract-tmp || true
+          file ./out/*    # 验证 ELF 架构是否正确
+
+      - name: Upload artifact per arch
+        uses: actions/upload-artifact@v4
+        with:
+          name: traeworkassistant-${{ matrix.platform }}
+          path: ./out/
+          if-no-files-found: error
+          retention-days: 7
