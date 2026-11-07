@@ -1,16 +1,16 @@
-name: Extract binaries from GHCR image (all architectures)
+name: Extract /app from GHCR image (all architectures)
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '镜像 tag（如 docker_main / 1.6.0 / sha-ddf65e7，留空自动取最新语义化版本）'
+        description: '镜像 tag（docker_main / 1.6.0 / sha-ddf65e7，留空自动取最新语义化版本）'
         required: false
         default: ''
-      binary_path:
-        description: '镜像内二进制文件路径'
+      src_path:
+        description: '镜像内要提取的目录或文件路径'
         required: false
-        default: '/app/traeworkassistant'
+        default: '/app'
 
 env:
   IMAGE_NAME: smart-open/traeworkassistant   # 不带 ghcr.io/ 前缀，不带 tag
@@ -25,7 +25,7 @@ jobs:
       packages: read
     outputs:
       image: ${{ steps.tag.outputs.image }}
-      platforms: ${{ steps.list.outputs.platforms }}
+      matrix: ${{ steps.list.outputs.matrix }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -63,8 +63,8 @@ jobs:
         run: |
           IMAGE="${{ steps.tag.outputs.image }}"
 
-          # --raw 输出原始 index JSON，jq 过滤 linux 平台
-          # （unknown/unknown 的 provenance/SBOM 清单会被自动排除）
+          # --raw 输出原始 OCI index JSON，jq 过滤 linux 平台，
+          # 自动排除 unknown/unknown 的 provenance/SBOM 清单
           PLATFORMS=$(docker buildx imagetools inspect "$IMAGE" --raw \
             | jq -r '.manifests[]
                      | select(.platform.os == "linux")
@@ -78,12 +78,18 @@ jobs:
             PLATFORMS="linux/amd64"
           fi
 
-          MATRIX=$(echo "$PLATFORMS" | jq -R -s -c 'split("\n") | map(select(length>0))')
-          echo "platforms=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "发现的平台: $MATRIX"
+          # 生成对象数组矩阵，safe 字段把 / 换成 - 用于 artifact 名
+          # 结果形如：[{"platform":"linux/amd64","safe":"linux-amd64"},...]
+          MATRIX=$(echo "$PLATFORMS" | jq -R -s -c '
+            split("\n")
+            | map(select(length > 0))
+            | map({platform: ., safe: (gsub("/"; "-"))})')
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "生成的矩阵: $MATRIX"
 
   # ============================================================
-  # Job 2：matrix 并行拉取各架构镜像，提取二进制
+  # Job 2：matrix 并行拉取各架构镜像，提取 /app 并按架构重命名
   # ============================================================
   extract:
     needs: resolve
@@ -93,7 +99,7 @@ jobs:
     strategy:
       fail-fast: false          # 某架构失败不影响其他架构继续
       matrix:
-        platform: ${{ fromJSON(needs.resolve.outputs.platforms) }}
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -102,55 +108,63 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 只 create + cp，不 run，因此 arm64 提取在 amd64 runner 上无需 QEMU
       - name: Pull and extract (${{ matrix.platform }})
         env:
           IMAGE: ${{ needs.resolve.outputs.image }}
           PLATFORM: ${{ matrix.platform }}
-          BINARY_PATH: ${{ inputs.binary_path || '/app/traeworkassistant' }}
+          SAFE_NAME: ${{ matrix.safe }}          # 例如 linux-amd64
+          SRC_PATH: ${{ inputs.src_path || '/app' }}
         run: |
           echo ">>> 拉取 $IMAGE ($PLATFORM)"
           docker pull --platform "$PLATFORM" "$IMAGE"
 
-          echo ">>> 创建临时容器"
+          echo ">>> 创建临时容器（不运行，无需 QEMU）"
           docker create --platform "$PLATFORM" --name extract-tmp "$IMAGE"
 
-          echo ">>> 拷出二进制: $BINARY_PATH"
+          echo ">>> 拷出: $SRC_PATH"
           mkdir -p ./out
-          if ! docker cp "extract-tmp:$BINARY_PATH" ./out/ ; then
-            echo "::error::路径 $BINARY_PATH 不存在，列出容器根目录供排查："
+          if ! docker cp "extract-tmp:$SRC_PATH" ./out/app ; then
+            echo "::error::路径 $SRC_PATH 不存在，列出容器根目录供排查："
             docker export extract-tmp -o image.tar
             tar -tf image.tar | head -80
             exit 1
           fi
           docker rm -f extract-tmp || true
 
-          echo ">>> 验证二进制架构:"
-          file ./out/*
+          # 按架构重命名：out/app -> out/app-linux-amd64
+          mv ./out/app "./out/app-${SAFE_NAME}"
+
+          echo ">>> 最终产物结构:"
+          find ./out -maxdepth 2 -exec ls -ld {} \;
+
+          # 如果里面是 Go/C 二进制，可验证真实架构（ELF ... arm64 / x86-64）
+          file "./out/app-${SAFE_NAME}"/* 2>/dev/null || true
 
       - name: Upload artifact per arch
         uses: actions/upload-artifact@v4
         with:
-          name: traeworkassistant-${{ matrix.platform }}
+          # 使用 safe 名（不含 /），绕开 upload-artifact 的文件系统兼容限制
+          name: traeworkassistant-${{ matrix.safe }}
           path: ./out/
           if-no-files-found: error
           retention-days: 7
 
   # ============================================================
-  # Job 3：汇总结果（可选，方便在 Actions 页面一眼看到产物矩阵）
+  # Job 3：在 Actions 页面生成可视化的结果摘要
   # ============================================================
   summary:
     needs: [resolve, extract]
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Summary
+      - name: Write summary
         run: |
           {
-            echo "## 提取结果"
+            echo "## 📦 提取结果"
             echo ""
             echo "- **镜像**: \`${{ needs.resolve.outputs.image }}\`"
-            echo "- **平台**: \`${{ needs.resolve.outputs.platforms }}\`"
+            echo "- **目标路径**: \`${{ inputs.src_path || '/app' }}\`"
+            echo "- **平台矩阵**: \`${{ needs.resolve.outputs.matrix }}\`"
             echo ""
-            echo "各架构产物见上方 artifact：\`traeworkassistant-<platform>\`"
+            echo "各架构产物见上方 artifact：\`traeworkassistant-<safe-arch>\`"
           } >> "$GITHUB_STEP_SUMMARY"
