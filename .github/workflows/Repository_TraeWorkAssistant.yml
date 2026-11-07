@@ -67,6 +67,7 @@ jobs:
         if: inputs.upx
         uses: crazy-max/ghaction-upx@v4
         with:
+          version: '5.0.0'
           install-only: true
       
       - name: Compress binary with UPX
